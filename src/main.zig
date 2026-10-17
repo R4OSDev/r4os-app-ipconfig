@@ -408,8 +408,6 @@ fn printNetworkDetail(ctx: *const App, detail: r4os.abi.NetDetailSnapshot) void 
     writeRuntimeSource(ctx, detail.protocols[r4os.abi.net_detail_protocol_dns]);
     ctx.write(" tcp=");
     writeRuntimeSource(ctx, detail.protocols[r4os.abi.net_detail_protocol_tcp]);
-    ctx.write(" r4sl=");
-    writeRuntimeSource(ctx, detail.protocols[r4os.abi.net_detail_protocol_serial_link]);
     ctx.write(" fail=");
     ctx.printU64(protocolFailures(detail));
     ctx.write(" req=");
@@ -464,14 +462,14 @@ fn runtimeSource(value: r4os.abi.NetDetailProtocolRuntime) []const u8 {
 fn protocolFailures(detail: r4os.abi.NetDetailSnapshot) u64 {
     var total: u64 = 0;
     var i: usize = 0;
-    while (i < detail.protocols.len) : (i += 1) total += detail.protocols[i].dispatch_failures;
+    while (i <= r4os.abi.net_detail_protocol_tcp) : (i += 1) total += detail.protocols[i].dispatch_failures;
     return total;
 }
 
 fn r4pRequiredCount(detail: r4os.abi.NetDetailSnapshot) u64 {
     var total: u64 = 0;
     var i: usize = 0;
-    while (i < detail.protocols.len) : (i += 1) {
+    while (i <= r4os.abi.net_detail_protocol_tcp) : (i += 1) {
         if (detail.protocols[i].builtin_fallback == 0 and
             detail.protocols[i].fallback_policy == r4os.abi.net_detail_fallback_policy_none and
             detail.protocols[i].fallback_decision == r4os.abi.net_detail_fallback_decision_none)
