@@ -1,26 +1,39 @@
 ﻿IPCONFIG.R4X
 ============
 
-IPCONFIG.R4X zeigt Netzwerkstatus, Adapterdaten und Servicezustand im
-Terminal an.
+IPCONFIG zeigt Konfiguration, Adapter, Dienst- und Familienfaehigkeiten an.
 
-Projektstruktur seit 0.51.19:
-- `build.zig` baut die App als eigenes SDK-Projekt.
-- `build.zig.zon` bindet `r4os_sdk` als Paket.
-- `module.R4MF` beschreibt Artefakt, Zielpfad, Imports und Contract.
+API-Migration0.90.69
+-------------------
 
-Build im jeweiligen Repository:
+Der normale Build verwendet SDK0.64.202, Contract0.64.93 und App2.
+SDK_PROFILE=r4os-zig-generation2 waehlt R4XStart2 und Query2.
+Die geordneten Importe folgen module.R4MF.
 
-    Build.bat       (Windows)
-    ./Build.sh      (Linux)
+    R4SYS:Query2:2
+    R4NET:Query2:2
+    R4DEV:Query2:2
 
-Standardziel im Workspace, ueber ARTIFACTS_ROOT in Settings.R4S:
+Die vorhandenen Aufrufe IPCONFIG, /ALL, /RENEW und /RELEASE sowie ihre
+Dash-Aliase bleiben erhalten. ArgCursor prueft das ganze Argument. Die
+DHCPaktion und der Status teilen sich ein absolutes Clockbudget.
+Familieninformationen stammen aus tatsaechlichen R4DEV-Protokollabfragen
+und Query2-Service-Info. Interface, Provider und Linkgeneration werden
+ausgegeben. IPv6-Adressen und Routen erhalten Praefix, Scope und Statusflags.
+Ein waehrend der Anzeige geaenderter Bestand verlangt eine Aktualisierung.
+DNS/TCP/UDP-Faehigkeiten werden pro Anbieter abgefragt. Unbekannte Werte
+bleiben ausdruecklich unbekannt. Der reine Betrachter kann vorhandene
+IPv4-Daten weiterhin anzeigen, wenn ein optionaler Familienanbieter fehlt.
+
+Build im jeweiligen Repository
+-------------------------------
+
+    Build.bat
+    ./Build.sh
+
+Die duennen Hoststarter fuehren gemeinsame PowerShell7-Logik aus.
+Settings.R4S ordnet die lokalen Besitzer zu. build.zig.zon pinnt den
+Standalone-Satz. Das Manifest besitzt Version, Klasse, Ziel und Abhaengigkeiten.
 
     Artifacts/Modules/IpConfig/IPCONFIG.R4X
-
-Contract:
-- App-Einstieg: `r4_app_main`; der SDK-Startup stellt R4XStart bereit.
-- App-Klasse: `console`
-- Eingebaute Platform-API-Imports (Query:1): `R4SYS`, `R4NET`
-- Zielpfad im Image: `C:\R4OS\SOFTWARE\TERMINAL\IPCONFIG.R4X`
-
+    C:\R4OS\SOFTWARE\TERMINAL\IPCONFIG.R4X

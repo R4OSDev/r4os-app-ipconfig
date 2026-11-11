@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.1.3`
+- Package version `0.1.5`
 - Image target: `/R4OS/SOFTWARE/TERMINAL/IPCONFIG.R4X`
 - Image scope: `full`
 - Canonical project manifest: `module.R4MF`
@@ -18,7 +18,7 @@ On Windows:
 
     Build.bat
 
-On Linux or macOS:
+On Linux
 
     ./Build.sh
 
@@ -38,3 +38,14 @@ Detailed German technical notes from the migration are preserved in
 Original R4OS material is licensed under Apache License 2.0. See `LICENSE`
 and `NOTICE`. Any repository-specific external material is documented in
 `THIRD_PARTY_NOTICES.md`.
+
+## API migration 0.90.69
+
+The normal build selects SDK202, App2, R4XStart2 and platform Query2.
+The exact dependencies and ordered imports belong to module.R4MF.
+
+The existing /ALL, /RENEW, /RELEASE and dash aliases retain their purpose.
+The whole argument is parsed by ArgCursor. DHCP action and status share one
+checked budget. Actual protocol/service Info calls report IPv6 interfaces,
+provider and link generations, addresses, routes and capabilities. A changing
+inventory is marked for refresh. Missing providers retain unknown data.

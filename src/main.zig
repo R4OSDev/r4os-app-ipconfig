@@ -1,3 +1,4 @@
+const std = @import("std");
 const r4os = @import("r4os");
 
 const Action = enum {
@@ -15,16 +16,16 @@ const service_channel_udp: u32 = 5;
 const App = struct {
     sys: r4os.r4sys.Context,
     net: r4os.r4net.Context,
+    dev: r4os.r4dev.Context,
+    clock: r4os.rpc_budget.Clock,
 
-    fn init(r4_app: *r4os.App) ?App {
+    fn init(r4_app: *r4os.App2) ?App {
         return .{
             .sys = r4_app.system(),
             .net = r4_app.networkLowLevel() orelse return null,
+            .dev = r4_app.devicesLowLevel() orelse return null,
+            .clock = (r4_app.clock() catch return null).read,
         };
-    }
-
-    fn argsRaw(self: *const App) [*:0]const u8 {
-        return self.sys.argsRaw();
     }
 
     fn write(self: *const App, value: []const u8) void {
@@ -47,18 +48,6 @@ const App = struct {
         return self.net.netConfigGet(out);
     }
 
-    fn netDhcpRenew(self: *const App) i32 {
-        return self.net.netDhcpRenewService();
-    }
-
-    fn netDhcpRelease(self: *const App) i32 {
-        return self.net.netDhcpReleaseService();
-    }
-
-    fn netDhcpStatus(self: *const App, out: *r4os.abi.DhcpStatus) i32 {
-        return self.net.netDhcpServiceStatus(out);
-    }
-
     fn netDetailGet(self: *const App, adapter_index: u32, out: *r4os.abi.NetDetailSnapshot) i32 {
         return self.net.netDetailGet(adapter_index, out);
     }
@@ -72,30 +61,24 @@ const App = struct {
     }
 };
 
-pub fn r4_app_main(r4_app: *r4os.App) i32 {
+pub fn r4_app_main(r4_app: *r4os.App2) i32 {
     const ctx = App.init(r4_app) orelse return r4os.abi.err_no_group;
-    const args = trim(zSlice(ctx.argsRaw()));
-    const action = parseAction(args) orelse {
+    var failure: r4os.arguments.Failure = .{};
+    var cursor = r4_app.argCursor(.{ .switches = r4os.arguments.slash | r4os.arguments.dash }, &failure) catch return 1;
+    const token = cursor.next() catch return 1;
+    const argument = if (token) |value| value.bytes(r4_app.args()) catch return 1 else "";
+    const action = parseAction(argument) orelse {
         usage(&ctx);
         return 1;
     };
-
-    var action_result: i32 = r4os.abi.net_tx_ok;
-    switch (action) {
-        .show, .show_all => {},
-        .renew => {
-            action_result = ctx.netDhcpRenew();
-            ctx.write("IPCONFIG renew: ");
-            ctx.write(ctx.netTxResultName(action_result));
-            ctx.write("\r\n\r\n");
-        },
-        .release => {
-            action_result = ctx.netDhcpRelease();
-            ctx.write("IPCONFIG release: ");
-            ctx.write(ctx.netTxResultName(action_result));
-            ctx.write("\r\n\r\n");
-        },
+    if ((cursor.next() catch return 1) != null) {
+        usage(&ctx);
+        return 1;
     }
+    var budget = r4os.rpc_budget.Budget.fromTimeout(ctx.clock, .{ .kind = r4os.abi.timeout_kind_finite, .nanoseconds = 5_000_000_000 }) catch |err| return r4os.rpc_budget.code(err);
+    var action_result: i32 = r4os.abi.net_tx_ok;
+    var dhcp_status: ?r4os.abi.NetServiceDhcpStatus = null;
+    if (action != .show) action_result = readDhcp(&ctx, action, &budget, &dhcp_status);
 
     var snapshot: r4os.abi.NetConfigSnapshot = .{};
     const result = ctx.netConfigGet(&snapshot);
@@ -166,14 +149,8 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
     ctx.write("\r\n");
 
     if (action == .show_all or action == .renew or action == .release) {
-        var dhcp_status: r4os.abi.DhcpStatus = .{};
-        if (ctx.netDhcpStatus(&dhcp_status) > 0) {
-            ctx.write("\r\nDHCP Lease\r\n");
-            printDhcpStatus(&ctx, dhcp_status);
-        } else {
-            ctx.write("\r\nDHCP Lease\r\n");
-            ctx.write("Status . . . . . . . . . : unavailable\r\n");
-        }
+        ctx.write("\r\nDHCP Lease\r\n");
+        if (dhcp_status) |status| printDhcpStatus(&ctx, status) else ctx.write("Status . . . . . . . . . : unavailable (unknown lease)\r\n");
     }
 
     if (action == .show_all) {
@@ -186,6 +163,7 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
         }
     }
 
+    printFamilies(&ctx, snapshot.adapter_count, &budget);
     if ((snapshot.flags & r4os.abi.net_config_flag_adapter_present) == 0) return 1;
     return if (action_result == r4os.abi.net_tx_ok) 0 else 1;
 }
@@ -202,9 +180,9 @@ fn usage(ctx: *const App) void {
     ctx.write("Usage: IPCONFIG [/ALL|/RENEW|/RELEASE]\r\n");
 }
 
-fn printDhcpStatus(ctx: *const App, status: r4os.abi.DhcpStatus) void {
+fn printDhcpStatus(ctx: *const App, status: r4os.abi.NetServiceDhcpStatus) void {
     ctx.write("State . . . . . . . . . . : ");
-    if ((status.flags & r4os.abi.dhcp_status_flag_bound) != 0) {
+    if ((status.flags & r4os.abi.net_service_dhcp_flag_bound) != 0) {
         ctx.write("bound");
     } else if (equalsIgnoreCase(spanZ(status.last_error[0..]), "released") or equalsIgnoreCase(spanZ(status.last_error[0..]), "no-lease")) {
         ctx.write("released");
@@ -223,7 +201,7 @@ fn printDhcpStatus(ctx: *const App, status: r4os.abi.DhcpStatus) void {
     writeIpv4(ctx, status.gateway_ip);
     ctx.write("\r\n");
     ctx.write("DNS Server . . . . . . . . : ");
-    if ((status.flags & r4os.abi.dhcp_status_flag_dns_configured) != 0) {
+    if ((status.flags & r4os.abi.net_service_dhcp_flag_dns_configured) != 0) {
         writeIpv4(ctx, status.dns_ip);
     } else {
         ctx.write("not configured");
@@ -587,34 +565,153 @@ fn spanZ(value: []const u8) []const u8 {
     return value[0..end];
 }
 
-fn zSlice(ptr: [*:0]const u8) []const u8 {
-    var len: usize = 0;
-    while (ptr[len] != 0) : (len += 1) {}
-    return ptr[0..len];
-}
-
-fn trim(value: []const u8) []const u8 {
-    var start: usize = 0;
-    var end = value.len;
-    while (start < end and isSpace(value[start])) : (start += 1) {}
-    while (end > start and isSpace(value[end - 1])) : (end -= 1) {}
-    return value[start..end];
-}
-
-fn isSpace(ch: u8) bool {
-    return ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n';
-}
-
 fn equalsIgnoreCase(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    var index: usize = 0;
-    while (index < a.len) : (index += 1) {
-        if (asciiUpper(a[index]) != asciiUpper(b[index])) return false;
-    }
-    return true;
+    return std.ascii.eqlIgnoreCase(a, b);
 }
 
-fn asciiUpper(ch: u8) u8 {
-    if (ch >= 'a' and ch <= 'z') return ch - 32;
-    return ch;
+fn readDhcp(ctx: *const App, action: Action, budget: *r4os.rpc_budget.Budget, out: *?r4os.abi.NetServiceDhcpStatus) i32 {
+    var client: r4os.network_family.Dhcp = undefined;
+    const opened = r4os.network_family.Dhcp.open(ctx.sys, &client);
+    if (opened != 0) {
+        if (action == .renew or action == .release) ctx.write("IPCONFIG DHCP service unavailable; action unconfirmed\r\n");
+        return if (action == .show_all) r4os.abi.net_tx_ok else r4os.abi.net_tx_backend_error;
+    }
+    var result: i32 = r4os.abi.net_tx_ok;
+    if (action == .renew or action == .release) {
+        var reply: r4os.abi.NetServiceDhcpResult = .{};
+        const op: u16 = if (action == .renew) r4os.abi.net_service_op_dhcp_renew_result else r4os.abi.net_service_op_dhcp_release_result;
+        const rc = client.action(op, budget, &reply);
+        ctx.write(if (action == .renew) "IPCONFIG renew: " else "IPCONFIG release: ");
+        if (rc == 0) {
+            result = reply.result;
+            ctx.write(ctx.netTxResultName(result));
+        } else {
+            result = r4os.abi.net_tx_backend_error;
+            ctx.write("unconfirmed, code=");
+            ctx.sys.printI32(rc);
+        }
+        ctx.write("\r\n\r\n");
+    }
+    var status: r4os.abi.NetServiceDhcpStatus = .{};
+    const got = client.status(budget, &status);
+    const closed = client.close();
+    if (got == 0 and closed >= 0) out.* = status;
+    if (closed < 0) {
+        ctx.write("DHCP connection close unconfirmed\r\n");
+        result = r4os.abi.net_tx_backend_error;
+    }
+    return result;
+}
+
+fn printFamilies(ctx: *const App, adapter_count: u32, budget: *r4os.rpc_budget.Budget) void {
+    const a = r4os.abi;
+    const family = r4os.network_family;
+    ctx.write("\r\nAddress families and providers\r\n");
+    for (0..adapter_count) |index| {
+        _ = budget.remainingTicks() catch {
+            ctx.write("IPv6 inventory incomplete; remaining data unknown\r\n");
+            return;
+        };
+        var client: family.Ipv6 = undefined;
+        const opened = family.Ipv6.open(ctx.dev, @intCast(index), &client);
+        if (opened != 0) {
+            ctx.write("IPv6 interface unavailable, code=");
+            ctx.sys.printI32(opened);
+            ctx.write("\r\n");
+            continue;
+        }
+        const info = client.info;
+        ctx.write("IPv6 interface=");
+        ctx.printU64(info.link.interface_id);
+        ctx.write(" provider=");
+        ctx.printU64(info.link.provider);
+        ctx.write(" generation=");
+        ctx.printU64(info.link.generation);
+        ctx.write(" capabilities=");
+        ctx.printU64(info.capabilities);
+        ctx.write(" max-packet=");
+        ctx.printU64(info.max_packet);
+        ctx.write("\r\n");
+        for (0..info.address_count) |cursor| {
+            _ = budget.remainingTicks() catch return;
+            var address: a.Ipv6AddressInfo = .{};
+            const rc = client.address(@intCast(cursor), &address);
+            if (rc != 0) {
+                ctx.write("IPv6 address inventory incomplete; remaining data unknown\r\n");
+                break;
+            }
+            ctx.write("IPv6 address ");
+            writeAddress(ctx, address.address);
+            ctx.putc('/');
+            ctx.printU64(address.prefix_length);
+            ctx.write(" flags=");
+            ctx.printU64(address.flags);
+            ctx.write("\r\n");
+        }
+        for (0..info.route_count) |cursor| {
+            _ = budget.remainingTicks() catch return;
+            var route: a.Ipv6RouteInfo = .{};
+            if (client.route(@intCast(cursor), &route) != 0) {
+                ctx.write("IPv6 route inventory incomplete; remaining data unknown\r\n");
+                break;
+            }
+            ctx.write("IPv6 route ");
+            writeAddress(ctx, route.prefix);
+            ctx.putc('/');
+            ctx.printU64(route.prefix_length);
+            ctx.write(" via ");
+            writeAddress(ctx, route.gateway);
+            ctx.write(" metric=");
+            ctx.printU64(route.metric);
+            ctx.write("\r\n");
+        }
+        var after: family.Ipv6 = undefined;
+        if (family.Ipv6.open(ctx.dev, @intCast(index), &after) != 0 or after.info.link.provider != info.link.provider or after.info.link.generation != info.link.generation or after.info.link.interface_id != info.link.interface_id or after.info.revision != info.revision) ctx.write("IPv6 inventory changed during display; refresh required\r\n");
+    }
+    for ([_]family.Service{ .dns, .tcp, .udp }) |service| {
+        _ = budget.remainingTicks() catch {
+            ctx.write("Service capabilities unknown; operation budget expired\r\n");
+            return;
+        };
+        ctx.write(@tagName(service));
+        var client: family.Client = undefined;
+        const opened = family.Client.connectProvider(ctx.sys, service, &client);
+        if (opened != 0) {
+            ctx.write(" provider unavailable; capabilities unknown\r\n");
+            continue;
+        }
+        client.timeout_ticks = budget.remainingTicks() catch {
+            _ = client.close();
+            ctx.write(" capabilities unknown; clock/budget failure\r\n");
+            return;
+        };
+        var info: a.NetworkProviderInfo = .{};
+        const rc = client.info(&info);
+        const closed = client.close();
+        if (rc != 0 or closed < 0) {
+            ctx.write(" capabilities unknown, code=");
+            ctx.sys.printI32(if (rc != 0) rc else closed);
+        } else {
+            ctx.write(" provider=");
+            ctx.printU64(info.provider);
+            ctx.write(" capabilities=");
+            ctx.printU64(info.capabilities);
+            ctx.write(" IPv4=");
+            ctx.write(if (info.capabilities & a.network_cap_ipv4 != 0) "yes" else "no");
+            ctx.write(" IPv6=");
+            ctx.write(if (info.capabilities & a.network_cap_ipv6 != 0) "yes" else "no");
+            if (service == .dns) {
+                ctx.write(" A=");
+                ctx.write(if (info.capabilities & a.network_cap_dns_a != 0) "yes" else "no");
+                ctx.write(" AAAA=");
+                ctx.write(if (info.capabilities & a.network_cap_dns_aaaa != 0) "yes" else "no");
+            }
+        }
+        ctx.write("\r\n");
+    }
+}
+
+fn writeAddress(ctx: *const App, value: r4os.abi.NetworkAddress) void {
+    var buffer: [80]u8 = undefined;
+    ctx.write(r4os.network_family.addressText(&buffer, value) catch "unknown");
 }
